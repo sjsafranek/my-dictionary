@@ -23,17 +23,15 @@ from tornado.options import define
 from tornado.options import options
 from tornado.options import parse_command_line
 
-app_log = logging.getLogger("tornado.application")
+logger = logging.getLogger("tornado.application")
 
 define("p", default=5000, help="server port", type=int)
-
 
 
 WORDS = []
 with open("words.json", 'r') as f:
 	data = json.load(f)
 	WORDS = data['words']
-
 
 
 class Database(object):
@@ -57,8 +55,20 @@ class Database(object):
 DB = Database(builtins.DATABASE_PATH)
 
 
+WEBSTERS_FAILURE_MESSAGES = [
+	"The word you've entered was not found",
+	"The word you've entered isn't in the dictionary",
+	"The word you've entered isn't in the thesaurus",
+	"Aren’t you smart – you've found a word that is only available in the Merriam-Webster Unabridged Dictionary"
+]
+
+
+# class BaseHandler(tornado.web.RequestHandler):
+# 	@tornado.web.asynchronous
+#
 
 class MainHandler(tornado.web.RequestHandler):
+	@tornado.web.asynchronous
 	def get(self):
 		self.write(
 				"The Real Dikshunary <br>" +
@@ -73,18 +83,10 @@ def create_new_word(page, old_word):
 			old_word (str): user supplied word
 	"""
 	new_word = random.choice(WORDS)
-	# while "ly" == new_word[len(new_word)-2: len(new_word)-1]:
-		# new_word = words[random.randint(0,len(words))].lower()
 	res = requests.get(builtins.WEBSTER_URL + "%s/%s" % (page, new_word))
-	app_log.info(builtins.WEBSTER_URL + "%s/%s" % (page, new_word))
+	logger.info(builtins.WEBSTER_URL + "%s/%s" % (page, new_word))
 	content = res.text
-	failure_messages = [
-		"The word you've entered was not found",
-		"The word you've entered isn't in the dictionary",
-		"The word you've entered isn't in the thesaurus",
-		"Aren’t you smart – you've found a word that is only available in the Merriam-Webster Unabridged Dictionary"
-	]
-	for message in failure_messages:
+	for message in WEBSTERS_FAILURE_MESSAGES:
 		if message in content:
 			content = create_new_word(page, old_word)
 	else:
@@ -101,8 +103,8 @@ def forge_page(word, url):
 			url (str): webster dictionary url
 	"""
 	res = requests.get(url)
-	app_log.info(url)
-	app_log.info({word: DB.data[word]})
+	logger.info(url)
+	logger.info({word: DB.data[word]})
 	content = res.text
 	content = content.replace(DB.data[word], word)
 	content = content.replace(DB.data[word].lower(), word.lower())
@@ -120,11 +122,31 @@ class MapHandler(tornado.web.RequestHandler):
 			self.write({word: None})
 		self.finish()
 
+class SetHandler(tornado.web.RequestHandler):
+	@tornado.web.asynchronous
+	def get(self, new_word, old_word):
+		self.set_header("Content-Type", "application/json")
+		old_word = old_word.upper()
+		if old_word in WORDS:
+			DB.data[new_word] = old_word
+			DB.save()
+			self.write({"status": "ok"})
+		else:
+			self.write({"error": "{0} does not exist".format(old_word)})
+		self.finish()
+
 class DatabaseHandler(tornado.web.RequestHandler):
 	@tornado.web.asynchronous
 	def get(self):
 		self.set_header("Content-Type", "application/json")
 		self.write(DB.data)
+		self.finish()
+
+class WordsHandler(tornado.web.RequestHandler):
+	@tornado.web.asynchronous
+	def get(self):
+		self.set_header("Content-Type", "application/json")
+		self.write({"words": WORDS})
 		self.finish()
 
 class DictionaryHandler(tornado.web.RequestHandler):
@@ -148,7 +170,7 @@ class DictionaryHandler(tornado.web.RequestHandler):
 				DB.data[word] = word
 			DB.save()
 			content = content.replace(DB.data[word], word)
-			app_log.info({word: DB.data[word]})
+			logger.info({word: DB.data[word]})
 			content = content.replace(DB.data[word], word)
 			content = content.replace(DB.data[word].lower(), word.lower())
 			content = content.replace(DB.data[word].upper(), word.upper())
@@ -165,11 +187,7 @@ class ThesaurusHandler(tornado.web.RequestHandler):
 		else:
 			res = requests.get(builtins.WEBSTER_URL + "thesaurus/%s" % word)
 			content = res.text
-			failure_messages = [
-				"The word you've entered was not found",
-				"The word you've entered isn't in the thesaurus."
-			]
-			for message in failure_messages:
+			for message in WEBSTERS_FAILURE_MESSAGES:
 				if message in content:
 					content = create_new_word("thesaurus", word)
 					break
@@ -177,7 +195,7 @@ class ThesaurusHandler(tornado.web.RequestHandler):
 				DB.data[word] = word
 			DB.save()
 			content = content.replace(DB.data[word], word)
-			app_log.info(word, DB.data[word])
+			logger.info(word, DB.data[word])
 			content = content.replace(DB.data[word], word)
 			content = content.replace(DB.data[word].lower(), word.lower())
 			content = content.replace(DB.data[word].upper(), word.upper())
@@ -190,21 +208,21 @@ class ThesaurusHandler(tornado.web.RequestHandler):
 # Tornado settings
 settings = {
 	'static_path': os.path.join(os.getcwd(), 'static'),
-	'template_path': os.path.join(os.getcwd(), 'templates'),
+	# 'template_path': os.path.join(os.getcwd(), 'templates'),
 	'debug': True
 }
 
 if __name__ == "__main__":
-	parse_command_line() 
+	parse_command_line()
 	application = tornado.web.Application([
 		(r"/", MainHandler),
 		(r"/db", DatabaseHandler),
+		(r"/words", WordsHandler),
 		(r"/map/([a-zA-Z]+)", MapHandler),
+		(r"/set/([a-zA-Z]+)/([a-zA-Z]+)", SetHandler),
 		(r"/dictionary/([a-zA-Z]+)",DictionaryHandler),
 		(r"/thesaurus/([a-zA-Z]+)", ThesaurusHandler),
 	], **settings)
 	application.listen(options.p)
-	app_log.info("Running on http://localhost:" + str(options.p))
+	logger.info("Running on http://localhost:" + str(options.p))
 	tornado.ioloop.IOLoop.current().start()
-
-
